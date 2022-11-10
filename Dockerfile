@@ -1,46 +1,56 @@
-FROM nvidia/cuda:10.1-cudnn7-devel-ubuntu18.04
+FROM ubuntu:18.04
 
-# Python environment setup
-ENV PYTHONDONTWRITEBYTECODE 1
-ENV PYTHONUNBUFFERED 1
-
-# RUN apt-get update -y && apt-get install -y python3-pip python3-dev libsm6 libxext6 libxrender-dev
-
-RUN apt-get update -y && apt-get install -y python3-pip python3-dev libsm6 libxext6 libxrender-dev
-RUN pip3 --version
-
-RUN \
-	apt-get install -y \
-	wget \
-	unzip \
-	ffmpeg \ 
-	git
+# Set a docker label to advertise multi-model support on the container
+LABEL com.amazonaws.sagemaker.capabilities.multi-models=true
+# Set a docker label to enable container to use SAGEMAKER_BIND_TO_PORT environment variable if present
+LABEL com.amazonaws.sagemaker.capabilities.accept-bind-to-port=true
 
 
+# Upgrade installed packages
+RUN apt-get update && apt-get upgrade -y && apt-get clean
 
-# Create and set working directory
-ENV PROJECT=/home/yolov7
-RUN mkdir -p ${PROJECT}
-WORKDIR ${PROJECT}
+# Python package management and basic dependencies
+RUN apt-get install -y curl python3.7 python3.7-dev python3.7-distutils
 
-# Packages required for setting up WSGI
-RUN apt-get update
-RUN apt-get install -y --no-install-recommends gcc libc-dev python3-dev
+# Register the version in alternatives
+RUN update-alternatives --install /usr/bin/python python /usr/bin/python3.7 1
 
-RUN pip3 install --upgrade pip
-RUN pip3 install opencv-python
-RUN pip3 install --upgrade pip
-RUN pip3 install opencv-python
-RUN pip3 install scikit-build
+# Set python 3 as the default python
+RUN update-alternatives --set python /usr/bin/python3.7
 
-# Copy and install requirements
-# RUN pip install --upgrade pip
-COPY requirements.txt ${PROJECT}
-RUN pip3 install -r ${PROJECT}/requirements.txt
+# Install necessary dependencies for MMS and SageMaker Inference Toolkit
+RUN apt-get -y install --no-install-recommends \
+    build-essential \
+    ca-certificates \
+    openjdk-8-jdk-headless \
+    curl \
+    vim \
+    && rm -rf /var/lib/apt/lists/* \
+    && python --version \
+    && curl -O https://bootstrap.pypa.io/get-pip.py \
+    && python get-pip.py
 
-# Copy project to working directory
-COPY . ${PROJECT}
+RUN update-alternatives --install /usr/bin/python python /usr/bin/python3 1
+RUN update-alternatives --install /usr/local/bin/pip pip /usr/local/bin/pip3 1
 
-# Make scripts executable and run entrypoint
-RUN chmod +x ./entrypoint.sh
-ENTRYPOINT ["sh", "entrypoint.sh"]
+# Install MXNet, MMS, and SageMaker Inference Toolkit to set up MMS
+RUN pip3 --no-cache-dir install mxnet \
+                                multi-model-server \
+                                sagemaker-inference \
+                                retrying
+
+# Copy entrypoint script to the image
+COPY dockerd-entrypoint.py /usr/local/bin/dockerd-entrypoint.py
+RUN chmod +x /usr/local/bin/dockerd-entrypoint.py
+
+RUN mkdir -p /home/model-server/
+RUN pip3 install multi-model-server sagemaker-inference
+
+# Copy the default custom service file to handle incoming data and inference requests
+COPY model_handler.py /home/model-server/model_handler.py
+
+# Define an entrypoint script for the docker image
+ENTRYPOINT ["python", "/usr/local/bin/dockerd-entrypoint.py"]
+
+# Define command to be passed to the entrypoint
+CMD ["serve"]
